@@ -1,0 +1,6 @@
+fastapi==0.163.1
+uvicorn[standard]==0.41.0
+python-multipart==0.0.27
+# 测试/自测使用（生产镜像非必需）
+httpx==0.28.1
+pytest==9.0.2

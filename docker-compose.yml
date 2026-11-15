@@ -1,0 +1,17 @@
+services:
+  recon:
+    build: .
+    container_name: salary-recon
+    ports:
+      - "8000:8000"
+    volumes:
+      - recon-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/state').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  recon-data:

@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工资支付单 · 银行回执对账</title>
+<style>
+  :root { --bd:#d9dee7; --bg:#f5f7fa; --ok:#1a7f37; --warn:#b26a00; --err:#c0392b; --pri:#1f6feb; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: "PingFang SC","Microsoft YaHei",system-ui,sans-serif; background:var(--bg); color:#1f2933; }
+  header { background:#10243e; color:#fff; padding:14px 24px; display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0; }
+  header .meta { font-size:12px; opacity:.8; }
+  main { max-width:1180px; margin:20px auto; padding:0 16px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:8px; padding:16px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  .badge { font-size:12px; padding:2px 8px; border-radius:10px; font-weight:600; }
+  .badge.certain { background:#daf3e2; color:var(--ok); }
+  .badge.pending { background:#fdf0d5; color:var(--warn); }
+  .badge.none { background:#f0f1f3; color:#667; }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  th,td { border:1px solid var(--bd); padding:6px 10px; text-align:left; }
+  th { background:#f0f3f8; }
+  button { cursor:pointer; border:1px solid var(--pri); background:var(--pri); color:#fff; border-radius:6px; padding:7px 14px; font-size:13px; }
+  button.secondary { background:#fff; color:var(--pri); }
+  button.danger { border-color:var(--err); background:#fff; color:var(--err); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  .hint { font-size:12px; color:#667; }
+  .order-block { border:1px solid var(--bd); border-radius:6px; padding:10px 12px; margin-bottom:10px; }
+  .order-block .head { display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+  .combo { border:1px dashed var(--bd); border-radius:6px; padding:8px 10px; margin:8px 0; }
+  .combo label { display:flex; gap:8px; align-items:flex-start; cursor:pointer; }
+  .muted { color:#889; }
+  #toast { position:fixed; right:20px; bottom:20px; max-width:420px; z-index:99; }
+  .toast-item { padding:10px 14px; border-radius:6px; margin-top:8px; font-size:13px; color:#fff; box-shadow:0 4px 14px rgba(0,0,0,.18); }
+  .toast-item.ok { background:var(--ok); } .toast-item.err { background:var(--err); } .toast-item.info { background:#334; }
+  input[type=file] { font-size:12px; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  @media (max-width:860px){ .grid2{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<header>
+  <h1>工资支付单 · 银行分拆到账回执对账</h1>
+  <span class="meta">FastAPI + SQLite · 同月支付单 ≤8 张 / 回执 ≤16 条 · 金额单位：分</span>
+</header>
+<main>
+  <section class="card">
+    <h2>① 数据导入与演示</h2>
+    <div class="grid2">
+      <div>
+        <div class="row">
+          <input type="file" id="orderFile" accept=".csv">
+          <button onclick="uploadOrders()">导入支付单 CSV</button>
+        </div>
+        <p class="hint">表头：<code>order_no,employee_no,amount,period</code>（period 可省略，默认 2026-10）</p>
+      </div>
+      <div>
+        <div class="row">
+          <input type="file" id="receiptFile" accept=".csv">
+          <button onclick="uploadReceipts()">导入回执 CSV</button>
+        </div>
+        <p class="hint">表头：<code>receipt_no,employee_no,amount,period</code>（支持补录，导入后建议自动重算）</p>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button onclick="loadDemo()">载入演示数据（2026-10）</button>
+      <button class="secondary" onclick="supplementDemo()">演示：补录 E005 回执</button>
+      <button class="danger" onclick="resetAll()">清空全部数据</button>
+      <span class="hint" id="counts"></span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 待确认匹配建议 <span id="maxInfo" class="badge none"></span>
+      <span class="hint">仅所有最优方案共有的配对标记为「确定」；存在歧义的列为「待核」，可人工选择后确认</span>
+    </h2>
+    <h3 style="font-size:14px"><span class="badge certain">确定</span> 所有最优方案共有配对（最多匹配数口径）</h3>
+    <div id="certainBox"><p class="muted">加载中…</p></div>
+    <h3 style="font-size:14px;margin-top:16px"><span class="badge pending">待核</span> 存在合法组合但非所有最优方案共有，需人工判断</h3>
+    <div id="pendingBox"></div>
+    <h3 style="font-size:14px;margin-top:16px"><span class="badge none">待核/暂不可配</span> 无合法组合的支付单与未使用回执</h3>
+    <div id="unmatchedBox"></div>
+    <div class="row" style="margin-top:12px">
+      <button id="confirmBtn" onclick="confirmSelected()">确认所选配对（整组事务）</button>
+      <span class="hint">确认后对应支付单与回执立即退出后续匹配；任一占用冲突则整组失败、数据不变</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ 已确认实付依据（可入仓）
+      <button class="secondary" style="margin-left:auto" onclick="downloadEvidence()">下载依据 CSV</button>
+    </h2>
+    <div id="confirmedBox"><p class="muted">尚无确认记录</p></div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+let STATE = null;
+
+function toast(msg, kind="info") {
+  const box = document.getElementById("toast");
+  const el = document.createElement("div");
+  el.className = "toast-item " + kind;
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 4500);
+}
+async function api(path, opts={}) {
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || ("HTTP " + res.status));
+  return data;
+}
+function fmtAmt(cents) { return cents.toLocaleString("zh-CN") + " 分"; }
+
+function render() {
+  if (!STATE) return;
+  const s = STATE.suggestion;
+  document.getElementById("counts").textContent =
+    `当前开放：支付单 ${s.counts.open_orders}/${s.counts.max_orders} 张，回执 ${s.counts.open_receipts}/${s.counts.max_receipts} 条`;
+  document.getElementById("maxInfo").textContent = `最优口径下最多可匹配 ${s.max_matched} 张支付单`;
+
+  // 确定
+  const cb = document.getElementById("certainBox");
+  cb.innerHTML = s.certain.length ? "" : '<p class="muted">无共有配对（所有最优方案的交集为空）</p>';
+  s.certain.forEach(c => cb.appendChild(orderBlock(c.order, [{receipts:c.receipts}], true)));
+
+  // 待核
+  const pb = document.getElementById("pendingBox");
+  pb.innerHTML = s.pending.length ? "" : '<p class="muted">无</p>';
+  s.pending.forEach(p => pb.appendChild(orderBlock(p.order, p.combos.map(x => ({receipts:x})), false)));
+
+  // 不可配
+  const ub = document.getElementById("unmatchedBox");
+  let html = "";
+  if (s.unmatched.length) {
+    html += "<p>无合法组合的支付单：" + s.unmatched.map(o =>
+      `<code>${o.order_no}</code>（${o.employee_no}，应付 ${fmtAmt(o.amount)}）`).join("；") + "</p>";
+  }
+  if (s.unused_receipts.length) {
+    html += "<p>未被确定配对占用的回执：" + s.unused_receipts.map(r =>
+      `<code>${r.receipt_no}</code>（${r.employee_no}，${fmtAmt(r.amount)}）`).join("；") + "</p>";
+  }
+  ub.innerHTML = html || '<p class="muted">无</p>';
+
+  // 已确认
+  const kb = document.getElementById("confirmedBox");
+  if (!STATE.confirmed.length) {
+    kb.innerHTML = '<p class="muted">尚无确认记录</p>';
+  } else {
+    kb.innerHTML = "";
+    STATE.confirmed.forEach(g => {
+      const div = document.createElement("div");
+      div.className = "order-block";
+      const rows = g.items.map(it => `<tr>
+          <td>${it.order_no}</td><td>${it.employee_no}</td>
+          <td>${fmtAmt(it.order_amount)}</td>
+          <td>${it.receipts.map(r => r.receipt_no + "（" + fmtAmt(r.amount) + "）").join("<br>")}</td>
+          <td>${fmtAmt(it.receipts.reduce((a,b)=>a+b.amount,0))}</td></tr>`).join("");
+      div.innerHTML = `<div class="head"><strong>确认批次 #${g.confirmation_id}</strong>
+        <span class="hint">${new Date(g.confirmed_at*1000).toLocaleString("zh-CN")} · ${g.items.length} 张支付单</span></div>
+        <table><thead><tr><th>支付单号</th><th>员工号</th><th>应付(分)</th><th>占用回执</th><th>回执合计(分)</th></tr></thead>
+        <tbody>${rows}</tbody></table>`;
+      kb.appendChild(div);
+    });
+  }
+}
+
+function orderBlock(order, combos, certain) {
+  const div = document.createElement("div");
+  div.className = "order-block";
+  const head = `<div class="head"><div>
+      <strong>${order.order_no}</strong> · 员工 ${order.employee_no} · 应付 <strong>${fmtAmt(order.amount)}</strong>
+      <span class="badge ${certain ? "certain" : "pending"}">${certain ? "确定" : "待核"}</span>
+    </div></div>`;
+  let body = "";
+  combos.forEach((combo, idx) => {
+    const sum = combo.receipts.reduce((a,b)=>a+b.amount,0);
+    body += `<div class="combo"><label>
+      <input type="checkbox" class="pick" data-order="${order.order_no}"
+        data-receipts='${JSON.stringify(combo.receipts.map(r=>r.receipt_no))}'
+        ${certain ? "checked" : ""}>
+      <span>${combo.receipts.map(r =>
+        `${r.receipt_no}（${r.employee_no}，${fmtAmt(r.amount)}）`).join(" + ")}
+        = <strong>${fmtAmt(sum)}</strong>${sum===order.amount ? ' ✅ 金额相等' : ' ❌'}</span>
+    </label></div>`;
+  });
+  div.innerHTML = head + body;
+  return div;
+}
+
+async function collectAndConfirm() {
+  const picks = [...document.querySelectorAll(".pick:checked")];
+  const perOrder = {};
+  for (const p of picks) {
+    const o = p.dataset.order;
+    if (perOrder[o]) { toast(`支付单 ${o} 只能选择一个组合`, "err"); return null; }
+    perOrder[o] = JSON.parse(p.dataset.receipts);
+  }
+  if (!Object.keys(perOrder).length) { toast("请至少勾选一个配对", "err"); return null; }
+  const allR = Object.values(perOrder).flat();
+  if (new Set(allR).size !== allR.length) { toast("所选组合之间存在重复回执", "err"); return null; }
+  return { items: Object.entries(perOrder).map(([order_no, receipt_nos]) => ({order_no, receipt_nos})) };
+}
+
+async function confirmSelected() {
+  const payload = await collectAndConfirm();
+  if (!payload) return;
+  if (!confirm(`将确认 ${payload.items.length} 张支付单的配对，确认后这些单据/回执不可再参与匹配。继续？`)) return;
+  try {
+    const r = await api("/api/confirm", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload)});
+    toast(`确认成功（批次 #${r.confirmation_id}，${r.confirmed_items} 项），整组已落库`, "ok");
+    await refresh();
+  } catch (e) { toast("确认失败，数据未改动：" + e.message, "err"); }
+}
+
+async function refresh() {
+  STATE = await api("/api/state");
+  render();
+}
+
+async function uploadOrders() {
+  const f = document.getElementById("orderFile").files[0];
+  if (!f) return toast("请先选择 CSV 文件", "err");
+  const fd = new FormData(); fd.append("file", f);
+  try { const r = await api("/api/import/orders", {method:"POST", body:fd}); toast(`支付单导入成功 ${r.imported} 张`, "ok"); await refresh(); }
+  catch (e) { toast("导入失败：" + e.message, "err"); }
+}
+async function uploadReceipts() {
+  const f = document.getElementById("receiptFile").files[0];
+  if (!f) return toast("请先选择 CSV 文件", "err");
+  const fd = new FormData(); fd.append("file", f);
+  try { const r = await api("/api/import/receipts", {method:"POST", body:fd}); toast(`回执导入成功 ${r.imported} 条，建议已重算`, "ok"); await refresh(); }
+  catch (e) { toast("导入失败：" + e.message, "err"); }
+}
+async function loadDemo() {
+  try { await api("/api/demo", {method:"POST"}); toast("演示数据已载入", "ok"); await refresh(); }
+  catch (e) { toast(e.message, "err"); }
+}
+async function supplementDemo() {
+  try { await api("/api/demo/supplement", {method:"POST"}); toast("E005 回执已补录，建议已重新计算", "ok"); await refresh(); }
+  catch (e) { toast(e.message, "err"); }
+}
+async function resetAll() {
+  if (!confirm("将清空全部支付单、回执与确认依据，确定？")) return;
+  try { await api("/api/reset", {method:"POST"}); toast("已清空", "ok"); await refresh(); }
+  catch (e) { toast(e.message, "err"); }
+}
+function downloadEvidence() { window.location.href = "/api/evidence.csv"; }
+
+refresh().catch(e => toast("初始化失败：" + e.message, "err"));
+setInterval(() => refresh().catch(()=>{}), 5000); // 多窗口状态同步
+</script>
+</body>
+</html>
